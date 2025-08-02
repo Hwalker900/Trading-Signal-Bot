@@ -10,8 +10,8 @@ app = Flask(__name__)
 BOT_TOKEN = "7776677134:AAGJo3VfwiB5gDpCE5e5jvtHonhTcjv-NWc"
 CHAT_ID = "@Supercellsignals"
 
-# --- Valid Pairs ---
-VALID_PAIRS = {'BABA', 'TSLA', 'BTCUSD', 'CADJPY', 'USDHUF', 'USDJPY'}
+# --- Valid Pairs (Updated for Forex Only) ---
+VALID_PAIRS = {'USDJPY', 'XAUUSD', 'EURGBP'}
 
 # --- Data Store ---
 daily_signals = []
@@ -45,17 +45,12 @@ def format_buy_sell_message(pair, signal, entry, sl, timestamp):
     except:
         readable_time = datetime.datetime.utcnow().strftime('%d %b %H:%M UTC')
     
-    if pair in {'BABA', 'TSLA'}:
-        display_pair = pair
-    elif pair in {'BTCUSD', 'CADJPY', 'USDHUF', 'USDJPY'}:
-        display_pair = f"{pair[:3]}/{pair[3:]}"
-    else:
-        display_pair = pair
+    display_pair = f"{pair[:3]}/{pair[3:]}"
     
     message = f"""
 *🌟 New Signal Alert!*
 
-💱 *{'Stock' if pair in {'BABA', 'TSLA'} else 'Pair'}*: {display_pair}
+💱 *Pair*: {display_pair}
 📢 *Action*: {'📈 Buy' if signal == 'BUY' else '📉 Sell'}
 💵 *Entry Price*: {entry}
 🛑 *Stop Loss*: {sl}
@@ -71,17 +66,12 @@ def format_exit_message(pair, exit_type, exit_price, timestamp):
     except:
         readable_time = datetime.datetime.utcnow().strftime('%d %b %H:%M UTC')
     
-    if pair in {'BABA', 'TSLA'}:
-        display_pair = pair
-    elif pair in {'BTCUSD', 'CADJPY', 'USDHUF', 'USDJPY'}:
-        display_pair = f"{pair[:3]}/{pair[3:]}"
-    else:
-        display_pair = pair
+    display_pair = f"{pair[:3]}/{pair[3:]}"
     
     message = f"""
 *🚪 Exit Alert!*
 
-💱 *{'Stock' if pair in {'BABA', 'TSLA'} else 'Pair'}*: {display_pair}
+💱 *Pair*: {display_pair}
 📢 *Exit Type*: {exit_type}
 💵 *Exit Price*: {exit_price}
 🕒 *Time*: {readable_time}
@@ -102,15 +92,9 @@ def webhook():
             print("⚠️ Missing required fields in payload.")
             return "Incomplete data", 400
 
-        # Normalize pair
-        original_pair = pair
-        if pair not in VALID_PAIRS and '/' not in pair and len(pair) >= 6:
-            pair = f"{pair[:3]}/{pair[3:]}"
-        pair_key = original_pair if original_pair in VALID_PAIRS else pair
-        
-        if pair_key not in VALID_PAIRS:
-            print(f"⚠️ Invalid pair: {original_pair} (normalized to {pair}) not in {VALID_PAIRS}")
-            return f"Invalid pair: {original_pair}", 400
+        if pair not in VALID_PAIRS:
+            print(f"⚠️ Invalid pair: {pair} not in {VALID_PAIRS}")
+            return f"Invalid pair: {pair}", 400
 
         if signal in ['BUY', 'SELL']:
             entry = data.get('entry')
@@ -118,8 +102,8 @@ def webhook():
             if not all([entry, sl]):
                 print("⚠️ Missing entry or stop loss for BUY/SELL signal.")
                 return "Missing entry or stop loss", 400
-            message = format_buy_sell_message(pair_key, signal, entry, sl, timestamp)
-            daily_signals.append({"pair": pair_key, "signal": signal})
+            message = format_buy_sell_message(pair, signal, entry, sl, timestamp)
+            daily_signals.append({"pair": pair, "signal": signal})
             send_telegram_message(message)
         elif signal == 'EXIT':
             exit_type = data.get('exit_type')
@@ -127,7 +111,7 @@ def webhook():
             if not all([exit_type, exit_price]):
                 print("⚠️ Missing exit_type or exit_price for EXIT signal.")
                 return "Missing exit details", 400
-            message = format_exit_message(pair_key, exit_type, exit_price, timestamp)
+            message = format_exit_message(pair, exit_type, exit_price, timestamp)
             send_telegram_message(message)
         else:
             print(f"⚠️ Invalid signal: {signal}")
@@ -152,7 +136,8 @@ def send_daily_summary():
     lines = [f"*📅 Today's Signals – {today}*"]
     for s in daily_signals:
         emoji = "📈" if s['signal'] == 'BUY' else "📉"
-        lines.append(f"💱 {s['pair']}: {emoji} {s['signal']}")
+        display_pair = f"{s['pair'][:3]}/{s['pair'][3:]}"
+        lines.append(f"💱 {display_pair}: {emoji} {s['signal']}")
     lines.append("\n🌟 Review these and plan your next move!")
     summary = '\n'.join(lines)
     send_telegram_message(summary)
