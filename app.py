@@ -64,6 +64,7 @@ def send_telegram_message(msg):
         print(f"❌ Telegram error: {e}, Response: {response.text if 'response' in locals() else 'No response'}")
 
 # --- Message Formatter for Buy/Sell Signals ---
+
 def format_buy_sell_message(pair, signal, entry, sl, timestamp):
     try:
         dt = datetime.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
@@ -71,18 +72,15 @@ def format_buy_sell_message(pair, signal, entry, sl, timestamp):
     except:
         readable_time = datetime.datetime.utcnow().strftime('%d %b %H:%M UTC')
     display_pair = f"{pair[:3]}/{pair[3:]}"
+    title = f"**{display_pair} {signal}**"
     message = f"""
-*🌟 New Signal Alert!*
-
-💱 *Pair*: {display_pair}
-📢 *Action*: {'📈 Buy' if signal == 'BUY' else '📉 Sell'}
-💵 *Entry Price*: {entry}
-🛑 *Stop Loss*: {sl}
-🕒 *Time*: {readable_time}
+{title}
+💵 Entry: {entry}
+🛑 SL: {sl}
+🕒 Time: {readable_time}
 """
-    return message
+    return message.strip()
 
-# --- Message Formatter for Exit Signals ---
 def format_exit_message(pair, exit_type, exit_price, timestamp):
     try:
         dt = datetime.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
@@ -90,15 +88,23 @@ def format_exit_message(pair, exit_type, exit_price, timestamp):
     except:
         readable_time = datetime.datetime.utcnow().strftime('%d %b %H:%M UTC')
     display_pair = f"{pair[:3]}/{pair[3:]}"
+    if exit_type == "TP":
+        exit_type_text = "Take Profit"
+    elif exit_type == "SL":
+        exit_type_text = "Stop Loss"
+    elif exit_type == "BE":
+        exit_type_text = "Break Even"
+    else:
+        exit_type_text = "Exit"
+    title = f"**{display_pair} {exit_type_text} Hit**"
     message = f"""
-*🚪 Exit Alert!*
-
-💱 *Pair*: {display_pair}
-📢 *Exit Type*: {exit_type}
-💵 *Exit Price*: {exit_price}
-🕒 *Time*: {readable_time}
+{title}
+💵 Exit: {exit_price}
+🕒 Time: {readable_time}
 """
-    return message
+    return message.strip()
+
+# ... (keep your existing code below)
 
 # --- Calculate Exit Type and Profit ---
 def calculate_exit_type_and_profit(pair, signal, entry_price, exit_price, sl_distance):
