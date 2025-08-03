@@ -246,7 +246,7 @@ def background_tasks():
     while True:
         send_daily_summary()
         now = datetime.datetime.utcnow()
-        if True:  # Temporary for testing
+        if now.weekday() == 4 and now.hour == 22 and now.minute < 10:
             send_weekly_report()
         time.sleep(600)
 
