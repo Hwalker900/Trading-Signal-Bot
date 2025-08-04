@@ -4,6 +4,7 @@ import datetime
 import time
 import threading
 import sqlite3
+import os
 from collections import defaultdict
 
 app = Flask(__name__)
@@ -218,7 +219,7 @@ def send_monthly_report():
         display_pair = f"{pair[:3]}/{pair[3:]}"
         lines.append(f"\n*Pair: {display_pair}*")
         lines.append(f"- Wins: {m['wins']}")
-        lines.append(f"- Losses: {m['losses']")
+        lines.append(f"- Losses: {m['losses']}")
         lines.append(f"- Break Even: {m['break_even']}")
         lines.append(f"- Net Profit: {m['net_profit']:.2f} RR (£{m['net_profit'] * RISK_PER_TRADE:.2f})")
     lines.append(f"\n*Total Net Profit: {total_net_profit:.2f} RR (£{total_net_profit * RISK_PER_TRADE:.2f})*")
