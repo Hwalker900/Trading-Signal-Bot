@@ -223,8 +223,7 @@ def background_tasks():
         send_daily_summary()
         now = datetime.datetime.now(datetime.UTC)
         # Weekly report: Friday at 22:00 UTC
-        if now.weekday() == 4 and now.hour == 22 and now.minute < 10:
-            send_weekly_report()
+        if True:  # Temporary for testing
         # Monthly report: Last trading day at 22:00 UTC
         last_trading_day = (now.replace(day=1) + datetime.timedelta(days=32)).replace(day=1) - datetime.timedelta(days=1)
         if now.date() == last_trading_day.date() and now.weekday() < 5 and now.hour == 22 and now.minute < 10:
