@@ -10,15 +10,14 @@ app = Flask(__name__)
 
 # --- Config ---
 BOT_TOKEN = "7776677134:AAGJo3VfwiB5gDpCE5e5jvtHonhTcjv-NWc"
-CHAT_ID = "@Supercellsignals"
-RISK_PER_TRADE = 50  # Fixed risk amount in GBP per trade
+CHAT_ID = "-1002658080507"  # Updated to private group ID
+RISK_PER_TRADE = 50
 SL_DISTANCES = {
-    'USDJPY': 0.32,   # 32 pips
-    'XAUUSD': 26.0,   # 2600 points
-    'EURGBP': 0.0016  # 16 pips
+    'USDJPY': 0.32,
+    'XAUUSD': 26.0,
+    'EURGBP': 0.0016
 }
-BREAK_EVEN_THRESHOLD = 0.0001  # Threshold for break even trades
-
+BREAK_EVEN_THRESHOLD = 0.0001
 # --- Valid Pairs (Forex Only) ---
 VALID_PAIRS = {'USDJPY', 'XAUUSD', 'EURGBP'}
 
