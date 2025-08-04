@@ -19,15 +19,17 @@ SL_DISTANCES = {
 }
 BREAK_EVEN_THRESHOLD = 0.0001  # Threshold for break even trades
 VALID_PAIRS = {'USDJPY', 'XAUUSD', 'EURGBP'}
+DB_PATH = '/data/trades.db'  # Persistent database path on Render disk
 
 # --- Data Store ---
 daily_signals = []
 last_summary_sent = None
 
 # --- Initialize Database ---
-conn = sqlite3.connect('/data/trades.db', check_same_thread=False)
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
-cursor.execute('''CREATE TABLE trades (
+cursor.execute('''CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     pair TEXT,
     signal TEXT,
@@ -61,10 +63,10 @@ def send_telegram_message(msg):
 # --- Message Formatter for Buy/Sell Signals ---
 def format_buy_sell_message(pair, signal, entry, sl, timestamp):
     try:
-        dt = datetime.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+        dt = datetime.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.UTC)
         readable_time = dt.strftime('%d %b %H:%M UTC')
     except:
-        readable_time = datetime.datetime.utcnow().strftime('%d %b %H:%M UTC')
+        readable_time = datetime.datetime.now(datetime.UTC).strftime('%d %b %H:%M UTC')
     display_pair = f"{pair[:3]}/{pair[3:]}"
     return f"""
 **{display_pair} {signal}**
@@ -76,10 +78,10 @@ def format_buy_sell_message(pair, signal, entry, sl, timestamp):
 # --- Message Formatter for Exit Signals ---
 def format_exit_message(pair, exit_type, exit_price, timestamp):
     try:
-        dt = datetime.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+        dt = datetime.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.UTC)
         readable_time = dt.strftime('%d %b %H:%M UTC')
     except:
-        readable_time = datetime.datetime.utcnow().strftime('%d %b %H:%M UTC')
+        readable_time = datetime.datetime.now(datetime.UTC).strftime('%d %b %H:%M UTC')
     display_pair = f"{pair[:3]}/{pair[3:]}"
     exit_type_text = {"TP": "Take Profit", "SL": "Stop Loss", "BE": "Break Even"}.get(exit_type, "Exit")
     return f"""
@@ -149,7 +151,7 @@ def webhook():
 # --- Daily Summary ---
 def send_daily_summary():
     global last_summary_sent
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     if now.hour != 21 or (last_summary_sent and last_summary_sent.date() == now.date()) or not daily_signals:
         return
     today = now.strftime('%d %b')
@@ -165,7 +167,7 @@ def send_daily_summary():
 
 # --- Weekly Performance Report ---
 def send_weekly_report():
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     days_since_saturday = (now.weekday() - 5) % 7
     start_date = now - datetime.timedelta(days=days_since_saturday)
     start_time = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -193,18 +195,51 @@ def send_weekly_report():
     lines.append(f"\n*Total Net Profit: {total_net_profit:.2f} RR (£{total_net_profit * RISK_PER_TRADE:.2f})*")
     send_telegram_message('\n'.join(lines))
 
+# --- Monthly Performance Report ---
+def send_monthly_report():
+    now = datetime.datetime.now(datetime.UTC)
+    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    end_of_month = (start_of_month + datetime.timedelta(days=32)).replace(day=1) - datetime.timedelta(seconds=1)
+    cursor.execute('SELECT pair, exit_type, profit FROM trades WHERE status = "closed" AND exit_timestamp >= ? AND exit_timestamp <= ?',
+                  (start_of_month.isoformat() + 'Z', end_of_month.isoformat() + 'Z'))
+    trades = cursor.fetchall()
+    metrics = defaultdict(lambda: {'wins': 0, 'losses': 0, 'break_even': 0, 'net_profit': 0.0})
+    for pair, exit_type, profit in trades:
+        if exit_type == 'TP':
+            metrics[pair]['wins'] += 1
+        elif exit_type == 'SL':
+            metrics[pair]['losses'] += 1
+        elif exit_type == 'BE':
+            metrics[pair]['break_even'] += 1
+        metrics[pair]['net_profit'] += profit / RISK_PER_TRADE
+    total_net_profit = sum(m['net_profit'] for m in metrics.values())
+    lines = [f"*📊 Monthly Performance – Month ending {end_of_month.strftime('%d %b %Y')}*"]
+    for pair, m in metrics.items():
+        display_pair = f"{pair[:3]}/{pair[3:]}"
+        lines.append(f"\n*Pair: {display_pair}*")
+        lines.append(f"- Wins: {m['wins']}")
+        lines.append(f"- Losses: {m['losses']")
+        lines.append(f"- Break Even: {m['break_even']}")
+        lines.append(f"- Net Profit: {m['net_profit']:.2f} RR (£{m['net_profit'] * RISK_PER_TRADE:.2f})")
+    lines.append(f"\n*Total Net Profit: {total_net_profit:.2f} RR (£{total_net_profit * RISK_PER_TRADE:.2f})*")
+    send_telegram_message('\n'.join(lines))
+
 # --- Scheduler Thread ---
 def background_tasks():
     while True:
         send_daily_summary()
-        now = datetime.datetime.utcnow()
-        if now.weekday() == 4 and now.hour == 22 and now.minute < 10:  # Friday at 22:00 UTC
+        now = datetime.datetime.now(datetime.UTC)
+        # Weekly report: Friday at 22:00 UTC
+        if now.weekday() == 4 and now.hour == 22 and now.minute < 10:
             send_weekly_report()
+        # Monthly report: Last trading day at 22:00 UTC
+        if now.date() == ((now.replace(day=1) + datetime.timedelta(days=32)).replace(day=1) - datetime.timedelta(days=1)).date() and now.weekday() < 5 and now.hour == 22 and now.minute < 10:
+            send_monthly_report()
         time.sleep(600)
 
 # --- App Startup ---
 if __name__ == '__main__':
     threading.Thread(target=background_tasks, daemon=True).start()
     import os
-    port = int(os.environ.get('PORT', 5001))
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
