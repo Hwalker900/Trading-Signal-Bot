@@ -24,8 +24,8 @@ VALID_PAIRS = {'USDJPY', 'XAUUSD', 'EURGBP'}
 daily_signals = []
 last_summary_sent = None
 
-# --- Initialize Database (In-Memory for Free Tier) ---
-conn = sqlite3.connect(':memory:', check_same_thread=False)
+# --- Initialize Database ---
+conn = sqlite3.connect('/data/trades.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
