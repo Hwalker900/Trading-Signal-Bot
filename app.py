@@ -112,13 +112,16 @@ def webhook():
     if not all([pair, signal, timestamp]) or pair not in VALID_PAIRS:
         return "Invalid data or pair", 400
     if signal in ['BUY', 'SELL']:
-        entry, sl = data.get('entry'), data.get('sl')
-        if not all([entry, sl]):
-            return "Missing entry or SL", 400
+        entry = data.get('entry')
+        if not entry:
+            return "Missing entry", 400
         try:
-            entry, sl = float(entry), float(sl)
+            entry = float(entry)
         except ValueError:
-            return "Invalid entry or SL format", 400
+            return "Invalid entry format", 400
+        # Calculate SL based on signal and fixed distance
+        sl_distance = SL_DISTANCES.get(pair, 0.01)
+        sl = entry + sl_distance if signal == 'SELL' else entry - sl_distance
         cursor.execute('INSERT INTO trades (pair, signal, entry, sl, timestamp) VALUES (?, ?, ?, ?, ?)',
                       (pair, signal, entry, sl, timestamp))
         conn.commit()
