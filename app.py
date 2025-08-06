@@ -21,11 +21,6 @@ SL_DISTANCES = {
 BREAK_EVEN_THRESHOLD = 0.0001  # Threshold for break even trades
 VALID_PAIRS = {'USDJPY', 'XAUUSD', 'EURGBP'}
 DB_PATH = '/data/trades.db'  # Persistent database path on Render disk
-POINT_VALUES = {
-    'USDJPY': 0.01,
-    'XAUUSD': 0.01,
-    'EURGBP': 0.0001,
-}
 
 # --- Data Store ---
 daily_signals = []
@@ -74,19 +69,15 @@ def format_buy_sell_message(pair, signal, entry, sl, timestamp):
     except:
         readable_time = datetime.datetime.now(datetime.UTC).strftime('%d %b %H:%M UTC')
     display_pair = f"{pair[:3]}/{pair[3:]}"
-    signal_emoji = "📈" if signal == "BUY" else "📉"
     return f"""
-🚨 **New {signal} Signal Alert** 🚨
-{signal_emoji} **{display_pair} {signal}**
-💵 *Entry:* {entry}
-🛑 *SL:* {sl}
-🕒 *Time:* {readable_time}
--------------------------
-📊 Trade responsibly!
+**{display_pair} {signal}**
+💵 Entry: {entry}
+🛑 SL: {sl}
+🕒 Time: {readable_time}
 """.strip()
 
 # --- Message Formatter for Exit Signals ---
-def format_exit_message(pair, exit_type, exit_price, timestamp, signal=None, entry_price=None):
+def format_exit_message(pair, exit_type, exit_price, timestamp):
     try:
         dt = datetime.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.UTC)
         readable_time = dt.strftime('%d %b %H:%M UTC')
@@ -94,20 +85,11 @@ def format_exit_message(pair, exit_type, exit_price, timestamp, signal=None, ent
         readable_time = datetime.datetime.now(datetime.UTC).strftime('%d %b %H:%M UTC')
     display_pair = f"{pair[:3]}/{pair[3:]}"
     exit_type_text = {"TP": "Take Profit", "SL": "Stop Loss", "BE": "Break Even"}.get(exit_type, "Exit")
-    exit_emoji = {"TP": "✅", "SL": "❌", "BE": "↔️"}.get(exit_type, "ℹ️")
-    lines = [
-        f"🚨 **{display_pair} {exit_type_text} Hit** 🚨",
-        f"{exit_emoji} *Exit Price:* {exit_price}",
-        f"🕒 *Time:* {readable_time}"
-    ]
-    if signal and entry_price is not None:
-        point_value = POINT_VALUES.get(pair, 0.0001)
-        price_diff = exit_price - entry_price if signal == 'BUY' else entry_price - exit_price
-        pd = round(price_diff / point_value)
-        lines.append(f"📏 *Point Difference:* {pd} PD")
-    lines.append("-------------------------")
-    lines.append("📊 Well done! Review your trade.")
-    return "\n".join(lines)
+    return f"""
+**{display_pair} {exit_type_text} Hit**
+💵 Exit: {exit_price}
+🕒 Time: {readable_time}
+""".strip()
 
 # --- Calculate Exit Type and Profit ---
 def calculate_exit_type_and_profit(pair, signal, entry_price, exit_price, sl_distance):
@@ -123,6 +105,7 @@ def calculate_exit_type_and_profit(pair, signal, entry_price, exit_price, sl_dis
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json()
+    print(f"Received webhook: {data}")  # Log the payload
     pair = data.get('pair')
     signal = data.get('signal').upper()
     timestamp = data.get('time')
@@ -159,10 +142,9 @@ def webhook():
             cursor.execute('UPDATE trades SET status = "closed", exit_price = ?, exit_timestamp = ?, exit_type = ?, profit = ? WHERE id = ?',
                           (exit_price, timestamp, exit_type, profit, trade_id))
             conn.commit()
-            message = format_exit_message(pair, exit_type, exit_price, timestamp, signal=trade_signal, entry_price=entry_price)
         else:
             exit_type = 'Unknown'
-            message = format_exit_message(pair, exit_type, exit_price, timestamp)
+        message = format_exit_message(pair, exit_type, exit_price, timestamp)
         send_telegram_message(message)
     else:
         return "Invalid signal", 400
