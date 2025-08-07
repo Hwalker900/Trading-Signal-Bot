@@ -106,51 +106,51 @@ def calculate_exit_type_and_profit(pair, signal, entry_price, exit_price, sl_dis
 def webhook():
     data = request.get_json()
     print(f"Received webhook: {data}")  # Log the payload
-    pair = data.get('pair')
-    signal = data.get('signal').upper()
-    timestamp = data.get('time')
-    if not all([pair, signal, timestamp]) or pair not in VALID_PAIRS:
-        return "Invalid data or pair", 400
-    if signal in ['BUY', 'SELL']:
-        entry = data.get('entry')
-        if not entry:
-            return "Missing entry", 400
-        try:
-            entry = float(entry)
-        except ValueError:
-            return "Invalid entry format", 400
-        # Calculate SL based on signal and fixed distance
-        sl_distance = SL_DISTANCES.get(pair, 0.01)
-        sl = entry + sl_distance if signal == 'SELL' else entry - sl_distance
-        cursor.execute('INSERT INTO trades (pair, signal, entry, sl, timestamp) VALUES (?, ?, ?, ?, ?)',
-                      (pair, signal, entry, sl, timestamp))
-        conn.commit()
-        message = format_buy_sell_message(pair, signal, entry, sl, timestamp)
-        daily_signals.append({"pair": pair, "signal": signal})
-        send_telegram_message(message)
-    elif signal == 'EXIT':
-        exit_price = data.get('exit_price')
-        if not exit_price:
-            return "Missing exit price", 400
-        try:
-            exit_price = float(exit_price)
-        except ValueError:
-            return "Invalid exit price format", 400
-        cursor.execute('SELECT id, signal, entry FROM trades WHERE pair = ? AND status = "open" ORDER BY id DESC LIMIT 1', (pair,))
-        row = cursor.fetchone()
-        if row:
-            trade_id, trade_signal, entry_price = row
-            sl_distance = SL_DISTANCES.get(pair, 0.01)
-            exit_type, profit = calculate_exit_type_and_profit(pair, trade_signal, entry_price, exit_price, sl_distance)
-            cursor.execute('UPDATE trades SET status = "closed", exit_price = ?, exit_timestamp = ?, exit_type = ?, profit = ? WHERE id = ?',
-                          (exit_price, timestamp, exit_type, profit, trade_id))
-            conn.commit()
-        else:
-            exit_type = 'Unknown'
-        message = format_exit_message(pair, exit_type, exit_price, timestamp)
-        send_telegram_message(message)
-    else:
-        return "Invalid signal", 400
+    if not data or 'message' not in data:
+        return "Invalid data", 400
+    
+    message = data['message']
+    print(f"Processing message: {message}")  # Debug log for message
+    
+    # Extract signal from message
+    signal = "BUY" if "Buy Signal" in message else "SELL" if "Sell Signal" in message else None
+    if not signal:
+        return "Invalid signal in message", 400
+    
+    # Extract SL from message (e.g., "SL: 0.8484")
+    sl_str = message.split("SL: ")[1] if "SL: " in message else None
+    if not sl_str:
+        return "Invalid SL format in message", 400
+    try:
+        sl = float(sl_str)
+    except ValueError:
+        return "Invalid SL value", 400
+    
+    # Extract pair from context (TradingView should provide this via syminfo.ticker)
+    pair = request.headers.get('X-TradingView-Pair') or request.args.get('pair')  # Fallback mechanism
+    if not pair or pair not in VALID_PAIRS:
+        return "Invalid or missing pair", 400
+    
+    # Extract entry and timestamp from TradingView placeholders (assumed in payload or headers)
+    entry = request.args.get('entry') or request.json.get('entry')
+    timestamp = request.args.get('time') or request.json.get('time')
+    if not entry or not timestamp:
+        return "Missing entry or timestamp", 400
+    try:
+        entry = float(entry)
+    except ValueError:
+        return "Invalid entry format", 400
+    
+    # Store the trade
+    cursor.execute('INSERT INTO trades (pair, signal, entry, sl, timestamp) VALUES (?, ?, ?, ?, ?)',
+                   (pair, signal, entry, sl, timestamp))
+    conn.commit()
+    
+    # Send Telegram message
+    message = format_buy_sell_message(pair, signal, entry, sl, timestamp)
+    daily_signals.append({"pair": pair, "signal": signal})
+    send_telegram_message(message)
+    
     return "Webhook received!", 200
 
 # --- Daily Summary ---
@@ -177,7 +177,7 @@ def send_weekly_report():
     start_date = now - datetime.timedelta(days=days_since_saturday)
     start_time = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
     cursor.execute('SELECT pair, exit_type, profit FROM trades WHERE status = "closed" AND exit_timestamp >= ? AND exit_timestamp <= ?',
-                  (start_time.isoformat() + 'Z', now.isoformat() + 'Z'))
+                   (start_time.isoformat() + 'Z', now.isoformat() + 'Z'))
     trades = cursor.fetchall()
     metrics = defaultdict(lambda: {'wins': 0, 'losses': 0, 'break_even': 0, 'net_profit': 0.0})
     for pair, exit_type, profit in trades:
@@ -206,7 +206,7 @@ def send_monthly_report():
     start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     end_of_month = (start_of_month + datetime.timedelta(days=32)).replace(day=1) - datetime.timedelta(seconds=1)
     cursor.execute('SELECT pair, exit_type, profit FROM trades WHERE status = "closed" AND exit_timestamp >= ? AND exit_timestamp <= ?',
-                  (start_of_month.isoformat() + 'Z', end_of_month.isoformat() + 'Z'))
+                   (start_of_month.isoformat() + 'Z', end_of_month.isoformat() + 'Z'))
     trades = cursor.fetchall()
     metrics = defaultdict(lambda: {'wins': 0, 'losses': 0, 'break_even': 0, 'net_profit': 0.0})
     for pair, exit_type, profit in trades:
