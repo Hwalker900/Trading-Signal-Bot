@@ -118,7 +118,7 @@ def webhook():
         return "Invalid signal in message", 400
     
     # Extract SL from message (e.g., "SL: 0.8484")
-    sl_str = message.split("SL: ")[1] if "SL: " in message else None
+    sl_str = message.split("SL: ")[1].split()[0] if "SL: " in message else None
     if not sl_str:
         return "Invalid SL format in message", 400
     try:
@@ -126,14 +126,14 @@ def webhook():
     except ValueError:
         return "Invalid SL value", 400
     
-    # Extract pair from context (TradingView should provide this via syminfo.ticker)
-    pair = request.headers.get('X-TradingView-Pair') or request.args.get('pair')  # Fallback mechanism
+    # Extract pair from TradingView context (via header or query param)
+    pair = request.headers.get('X-TradingView-Ticker') or request.args.get('ticker')  # Adjusted for TradingView
     if not pair or pair not in VALID_PAIRS:
         return "Invalid or missing pair", 400
     
-    # Extract entry and timestamp from TradingView placeholders (assumed in payload or headers)
-    entry = request.args.get('entry') or request.json.get('entry')
-    timestamp = request.args.get('time') or request.json.get('time')
+    # Extract entry and timestamp from TradingView placeholders
+    entry = request.args.get('close')  # 'close' is the placeholder name TradingView uses
+    timestamp = request.args.get('time')  # 'time' is the placeholder name
     if not entry or not timestamp:
         return "Missing entry or timestamp", 400
     try:
