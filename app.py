@@ -6,6 +6,7 @@ import threading
 import sqlite3
 import os
 from collections import defaultdict
+import json
 
 app = Flask(__name__)
 
@@ -78,7 +79,7 @@ def format_buy_sell_message(pair, signal, entry, sl, timestamp):
 """.strip()
 
 # --- Message Formatter for Exit Signals ---
-def format_exit_message(pair, exit_type, exit_price, timestamp):
+def format_exit_message(pair, exit_type, exit_price, timestamp, price_diff):
     try:
         dt = datetime.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.UTC)
         readable_time = dt.strftime('%d %b %H:%M UTC')
@@ -89,6 +90,7 @@ def format_exit_message(pair, exit_type, exit_price, timestamp):
     return f"""
 **{display_pair} {exit_type_text} Hit**
 💵 Exit: {exit_price}
+📏 Price Diff from Entry: {price_diff:.4f}
 🕒 Time: {readable_time}
 """.strip()
 
@@ -96,17 +98,26 @@ def format_exit_message(pair, exit_type, exit_price, timestamp):
 def calculate_exit_type_and_profit(pair, signal, entry_price, exit_price, sl_distance):
     price_diff = exit_price - entry_price if signal == 'BUY' else entry_price - exit_price
     if abs(price_diff) <= BREAK_EVEN_THRESHOLD:
-        return 'BE', 0.0
+        return 'BE', 0.0, price_diff
     rr_ratio = round(price_diff / sl_distance, 2) if sl_distance != 0 else 0
     profit = rr_ratio * RISK_PER_TRADE
     exit_type = 'TP' if price_diff > 0 else 'SL'
-    return exit_type, profit
+    return exit_type, profit, price_diff
 
 # --- Webhook Handler ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.get_json()
-    print(f"Received webhook: {data}")  # Log the payload
+    try:
+        raw_data = request.data.decode('utf-8')
+        data = json.loads(raw_data)
+        print(f"Received webhook payload: {data}")  # Log for debugging
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON parse error: {e} - Raw data: {raw_data}")
+        return "Invalid JSON", 400
+    except Exception as e:
+        print(f"❌ Webhook error: {e}")
+        return "Server error", 500
+
     if not data:
         return "Invalid data", 400
     
@@ -158,7 +169,7 @@ def webhook():
         
         trade_id, sig, entry, sl = trade
         sl_distance = SL_DISTANCES[pair]
-        exit_type, profit = calculate_exit_type_and_profit(pair, sig, entry, exit_price, sl_distance)
+        exit_type, profit, price_diff = calculate_exit_type_and_profit(pair, sig, entry, exit_price, sl_distance)
         
         # Update the trade in DB
         cursor.execute('UPDATE trades SET status = "closed", exit_price = ?, exit_timestamp = ?, exit_type = ?, profit = ? WHERE id = ?',
@@ -166,7 +177,7 @@ def webhook():
         conn.commit()
         
         # Send Telegram message
-        message = format_exit_message(pair, exit_type, exit_price, timestamp)
+        message = format_exit_message(pair, exit_type, exit_price, timestamp, price_diff)
         send_telegram_message(message)
     
     else:
