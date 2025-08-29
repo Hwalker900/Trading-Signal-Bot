@@ -140,19 +140,36 @@ def webhook():
         except ValueError:
             return "Invalid entry or sl value", 400
         
-        # Check for duplicate same-direction signal (ignore if open trade with same signal)
-        cursor.execute('SELECT signal FROM trades WHERE pair = ? AND status = "open" ORDER BY id DESC LIMIT 1', (pair,))
+        # Check for existing open trade
+        cursor.execute('SELECT id, signal, entry, sl FROM trades WHERE pair = ? AND status = "open" ORDER BY id DESC LIMIT 1', (pair,))
         existing_trade = cursor.fetchone()
-        if existing_trade and existing_trade[0] == signal:
-            print(f"Ignored duplicate {signal} signal for {pair}")
-            return "Ignored duplicate signal", 200
         
-        # Store the trade
+        if existing_trade:
+            trade_id, existing_signal, existing_entry, existing_sl = existing_trade
+            if existing_signal == signal:
+                print(f"Ignored duplicate {signal} signal for {pair}")
+                return "Ignored duplicate signal", 200
+            else:
+                # Opposite signal: close existing trade as exit
+                exit_price = entry  # Use new entry price as exit price for reversal
+                sl_distance = SL_DISTANCES[pair]
+                exit_type, profit, price_diff = calculate_exit_type_and_profit(pair, existing_signal, existing_entry, exit_price, sl_distance)
+                
+                # Update the existing trade
+                cursor.execute('UPDATE trades SET status = "closed", exit_price = ?, exit_timestamp = ?, exit_type = ?, profit = ? WHERE id = ?',
+                               (exit_price, timestamp, exit_type, profit, trade_id))
+                conn.commit()
+                
+                # Send exit message
+                message = format_exit_message(pair, exit_type, exit_price, timestamp, price_diff)
+                send_telegram_message(message)
+        
+        # Insert the new trade (whether new or after reversal)
         cursor.execute('INSERT INTO trades (pair, signal, entry, sl, timestamp) VALUES (?, ?, ?, ?, ?)',
                        (pair, signal, entry, sl, timestamp))
         conn.commit()
         
-        # Send Telegram message
+        # Send Telegram message for new entry
         message = format_buy_sell_message(pair, signal, entry, sl, timestamp)
         daily_signals.append({"pair": pair, "signal": signal})
         send_telegram_message(message)
@@ -245,12 +262,17 @@ def send_daily_report():
 # --- Weekly Performance Report ---
 def send_weekly_report():
     now = datetime.datetime.now(datetime.UTC)
-    days_since_saturday = (now.weekday() - 5) % 7
-    start_date = now - datetime.timedelta(days=days_since_saturday)
-    start_time = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    if now.weekday() != 5 or now.hour != 22:  # Assuming send on Saturday at 22:00 UTC
+        return
+    days_since_saturday = (now.weekday() - 5) % 7  # This would be 0 on Saturday
+    start_date = now - datetime.timedelta(days=now.weekday() + 1)  # Start from previous Sunday
+    start_time = start_date.replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(days=1)  # Monday start?
+    # Adjust as needed for week definition
     cursor.execute('SELECT pair, exit_type, profit FROM trades WHERE status = "closed" AND exit_timestamp >= ? AND exit_timestamp <= ?',
                    (start_time.isoformat() + 'Z', now.isoformat() + 'Z'))
     trades = cursor.fetchall()
+    if not trades:
+        return
     metrics = defaultdict(lambda: {'wins': 0, 'losses': 0, 'break_even': 0, 'net_profit': 0.0})
     for pair, exit_type, profit in trades:
         if exit_type == 'TP':
@@ -275,11 +297,15 @@ def send_weekly_report():
 # --- Monthly Performance Report ---
 def send_monthly_report():
     now = datetime.datetime.now(datetime.UTC)
-    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    end_of_month = (start_of_month + datetime.timedelta(days=32)).replace(day=1) - datetime.timedelta(seconds=1)
+    if now.day != 1 or now.hour != 0:  # Send on first day of next month at 00:00, for previous month
+        return
+    start_of_month = (now - datetime.timedelta(days=1)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    end_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - datetime.timedelta(seconds=1)
     cursor.execute('SELECT pair, exit_type, profit FROM trades WHERE status = "closed" AND exit_timestamp >= ? AND exit_timestamp <= ?',
                    (start_of_month.isoformat() + 'Z', end_of_month.isoformat() + 'Z'))
     trades = cursor.fetchall()
+    if not trades:
+        return
     metrics = defaultdict(lambda: {'wins': 0, 'losses': 0, 'break_even': 0, 'net_profit': 0.0})
     for pair, exit_type, profit in trades:
         if exit_type == 'TP':
@@ -290,4 +316,29 @@ def send_monthly_report():
             metrics[pair]['break_even'] += 1
         metrics[pair]['net_profit'] += profit
     total_net_profit = sum(m['net_profit'] for m in metrics.values())
-    lines = [f"*📊 Monthly Performance – Month ending {end_of_month.strftime('%d %b %Y')}*
+    month_name = end_of_month.strftime('%b %Y')
+    lines = [f"*📊 Monthly Performance – {month_name}*"]
+    for pair, m in metrics.items():
+        display_pair = f"{pair[:3]}/{pair[3:]}"
+        lines.append(f"\n*Pair: {display_pair}*")
+        lines.append(f"- Wins: {m['wins']}")
+        lines.append(f"- Losses: {m['losses']}")
+        lines.append(f"- Break Even: {m['break_even']}")
+        lines.append(f"- Net Profit: {m['net_profit']:.2f}%")
+    lines.append(f"\n*Total Net Profit: {total_net_profit:.2f}%*")
+    send_telegram_message('\n'.join(lines))
+
+# --- Scheduler Thread ---
+def scheduler():
+    while True:
+        send_daily_summary()
+        send_daily_report()
+        send_weekly_report()
+        send_monthly_report()
+        time.sleep(60)  # Check every minute
+
+# Start scheduler in background
+threading.Thread(target=scheduler, daemon=True).start()
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
