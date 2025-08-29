@@ -13,7 +13,6 @@ app = Flask(__name__)
 # --- Config ---
 BOT_TOKEN = "7776677134:AAGJo3VfwiB5gDpCE5e5jvtHonhTcjv-NWc"
 CHAT_ID = "-1002658080507"  # Private group ID
-RISK_PER_TRADE = 50  # Fixed risk amount in GBP per trade
 SL_DISTANCES = {
     'USDJPY': 0.32,   # 32 pips
     'XAUUSD': 26.0,   # 2600 points
@@ -100,7 +99,7 @@ def calculate_exit_type_and_profit(pair, signal, entry_price, exit_price, sl_dis
     if abs(price_diff) <= BREAK_EVEN_THRESHOLD:
         return 'BE', 0.0, price_diff
     rr_ratio = round(price_diff / sl_distance, 2) if sl_distance != 0 else 0
-    profit = rr_ratio * RISK_PER_TRADE
+    profit = rr_ratio  # Now as percentage base (1.0 = 1%)
     exit_type = 'TP' if price_diff > 0 else 'SL'
     return exit_type, profit, price_diff
 
@@ -140,6 +139,13 @@ def webhook():
             sl = float(sl)
         except ValueError:
             return "Invalid entry or sl value", 400
+        
+        # Check for duplicate same-direction signal (ignore if open trade with same signal)
+        cursor.execute('SELECT signal FROM trades WHERE pair = ? AND status = "open" ORDER BY id DESC LIMIT 1', (pair,))
+        existing_trade = cursor.fetchone()
+        if existing_trade and existing_trade[0] == signal:
+            print(f"Ignored duplicate {signal} signal for {pair}")
+            return "Ignored duplicate signal", 200
         
         # Store the trade
         cursor.execute('INSERT INTO trades (pair, signal, entry, sl, timestamp) VALUES (?, ?, ?, ?, ?)',
@@ -222,7 +228,7 @@ def send_daily_report():
             metrics[pair]['losses'] += 1
         elif exit_type == 'BE':
             metrics[pair]['break_even'] += 1
-        metrics[pair]['net_profit'] += profit / RISK_PER_TRADE
+        metrics[pair]['net_profit'] += profit
     total_net_profit = sum(m['net_profit'] for m in metrics.values())
     lines = [f"*📊 Daily Performance – {now.strftime('%d %b %Y')}*"]
     for pair, m in metrics.items():
@@ -231,8 +237,8 @@ def send_daily_report():
         lines.append(f"- Wins: {m['wins']}")
         lines.append(f"- Losses: {m['losses']}")
         lines.append(f"- Break Even: {m['break_even']}")
-        lines.append(f"- Net Profit: {m['net_profit']:.2f} RR (£{m['net_profit'] * RISK_PER_TRADE:.2f})")
-    lines.append(f"\n*Total Net Profit: {total_net_profit:.2f} RR (£{total_net_profit * RISK_PER_TRADE:.2f})*")
+        lines.append(f"- Net Profit: {m['net_profit']:.2f}%")
+    lines.append(f"\n*Total Net Profit: {total_net_profit:.2f}%*")
     send_telegram_message('\n'.join(lines))
     last_daily_report = now
 
@@ -253,7 +259,7 @@ def send_weekly_report():
             metrics[pair]['losses'] += 1
         elif exit_type == 'BE':
             metrics[pair]['break_even'] += 1
-        metrics[pair]['net_profit'] += profit / RISK_PER_TRADE
+        metrics[pair]['net_profit'] += profit
     total_net_profit = sum(m['net_profit'] for m in metrics.values())
     lines = [f"*📊 Weekly Performance – Week ending {now.strftime('%d %b %Y')}*"]
     for pair, m in metrics.items():
@@ -262,8 +268,8 @@ def send_weekly_report():
         lines.append(f"- Wins: {m['wins']}")
         lines.append(f"- Losses: {m['losses']}")
         lines.append(f"- Break Even: {m['break_even']}")
-        lines.append(f"- Net Profit: {m['net_profit']:.2f} RR (£{m['net_profit'] * RISK_PER_TRADE:.2f})")
-    lines.append(f"\n*Total Net Profit: {total_net_profit:.2f} RR (£{total_net_profit * RISK_PER_TRADE:.2f})*")
+        lines.append(f"- Net Profit: {m['net_profit']:.2f}%")
+    lines.append(f"\n*Total Net Profit: {total_net_profit:.2f}%*")
     send_telegram_message('\n'.join(lines))
 
 # --- Monthly Performance Report ---
@@ -282,36 +288,6 @@ def send_monthly_report():
             metrics[pair]['losses'] += 1
         elif exit_type == 'BE':
             metrics[pair]['break_even'] += 1
-        metrics[pair]['net_profit'] += profit / RISK_PER_TRADE
+        metrics[pair]['net_profit'] += profit
     total_net_profit = sum(m['net_profit'] for m in metrics.values())
-    lines = [f"*📊 Monthly Performance – Month ending {end_of_month.strftime('%d %b %Y')}*"]
-    for pair, m in metrics.items():
-        display_pair = f"{pair[:3]}/{pair[3:]}"
-        lines.append(f"\n*Pair: {display_pair}*")
-        lines.append(f"- Wins: {m['wins']}")
-        lines.append(f"- Losses: {m['losses']}")
-        lines.append(f"- Break Even: {m['break_even']}")
-        lines.append(f"- Net Profit: {m['net_profit']:.2f} RR (£{m['net_profit'] * RISK_PER_TRADE:.2f})")
-    lines.append(f"\n*Total Net Profit: {total_net_profit:.2f} RR (£{total_net_profit * RISK_PER_TRADE:.2f})*")
-    send_telegram_message('\n'.join(lines))
-
-# --- Scheduler Thread ---
-def background_tasks():
-    while True:
-        send_daily_summary()
-        send_daily_report()
-        now = datetime.datetime.now(datetime.UTC)
-        # Weekly report: Friday at 22:00 UTC
-        if now.weekday() == 4 and now.hour == 22 and now.minute < 10:
-            send_weekly_report()
-        # Monthly report: Last trading day at 22:00 UTC
-        if now.date() == ((now.replace(day=1) + datetime.timedelta(days=32)).replace(day=1) - datetime.timedelta(days=1)).date() and now.weekday() < 5 and now.hour == 22 and now.minute < 10:
-            send_monthly_report()
-        time.sleep(600)
-
-# --- App Startup ---
-if __name__ == '__main__':
-    threading.Thread(target=background_tasks, daemon=True).start()
-    import os
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    lines = [f"*📊 Monthly Performance – Month ending {end_of_month.strftime('%d %b %Y')}*
