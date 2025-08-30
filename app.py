@@ -26,6 +26,8 @@ DB_PATH = '/data/trades.db'  # Persistent database path on Render disk
 daily_signals = []
 last_summary_sent = None
 last_daily_report = None
+last_weekly_report = None
+last_monthly_report = None
 
 # --- Initialize Database ---
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -261,13 +263,13 @@ def send_daily_report():
 
 # --- Weekly Performance Report ---
 def send_weekly_report():
+    global last_weekly_report
     now = datetime.datetime.now(datetime.UTC)
-    if now.weekday() != 5 or now.hour != 22:  # Assuming send on Saturday at 22:00 UTC
+    if now.weekday() != 5 or now.hour != 22 or (last_weekly_report and last_weekly_report.date() == now.date()):
         return
-    days_since_saturday = (now.weekday() - 5) % 7  # This would be 0 on Saturday
-    start_date = now - datetime.timedelta(days=now.weekday() + 1)  # Start from previous Sunday
-    start_time = start_date.replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(days=1)  # Monday start?
-    # Adjust as needed for week definition
+    # Week from previous Sunday to now (Saturday)
+    start_date = now - datetime.timedelta(days=6)  # Back to Sunday
+    start_time = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
     cursor.execute('SELECT pair, exit_type, profit FROM trades WHERE status = "closed" AND exit_timestamp >= ? AND exit_timestamp <= ?',
                    (start_time.isoformat() + 'Z', now.isoformat() + 'Z'))
     trades = cursor.fetchall()
@@ -293,11 +295,13 @@ def send_weekly_report():
         lines.append(f"- Net Profit: {m['net_profit']:.2f}%")
     lines.append(f"\n*Total Net Profit: {total_net_profit:.2f}%*")
     send_telegram_message('\n'.join(lines))
+    last_weekly_report = now
 
 # --- Monthly Performance Report ---
 def send_monthly_report():
+    global last_monthly_report
     now = datetime.datetime.now(datetime.UTC)
-    if now.day != 1 or now.hour != 0:  # Send on first day of next month at 00:00, for previous month
+    if now.day != 1 or now.hour != 0 or (last_monthly_report and last_monthly_report.date() == now.date()):
         return
     start_of_month = (now - datetime.timedelta(days=1)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     end_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - datetime.timedelta(seconds=1)
@@ -327,6 +331,7 @@ def send_monthly_report():
         lines.append(f"- Net Profit: {m['net_profit']:.2f}%")
     lines.append(f"\n*Total Net Profit: {total_net_profit:.2f}%*")
     send_telegram_message('\n'.join(lines))
+    last_monthly_report = now
 
 # --- Scheduler Thread ---
 def scheduler():
