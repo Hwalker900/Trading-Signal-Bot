@@ -146,35 +146,66 @@ def webhook():
         cursor.execute('SELECT id, signal, entry, sl FROM trades WHERE pair = ? AND status = "open" ORDER BY id DESC LIMIT 1', (pair,))
         existing_trade = cursor.fetchone()
         
+        is_reversal = False
+        is_adjustment = False
+        exit_message_part = ""
         if existing_trade:
             trade_id, existing_signal, existing_entry, existing_sl = existing_trade
-            if existing_signal == signal:
-                print(f"Ignored duplicate {signal} signal for {pair}")
-                return "Ignored duplicate signal", 200
-            else:
-                # Opposite signal: close existing trade as exit
-                exit_price = entry  # Use new entry price as exit price for reversal
+            price_diff = abs(entry - existing_entry)
+            if existing_signal != signal:
+                # Reversal (opposite signal)
+                is_reversal = True
+                exit_price = entry
                 sl_distance = SL_DISTANCES[pair]
                 exit_type, profit, price_diff = calculate_exit_type_and_profit(pair, existing_signal, existing_entry, exit_price, sl_distance)
                 
-                # Update the existing trade
                 cursor.execute('UPDATE trades SET status = "closed", exit_price = ?, exit_timestamp = ?, exit_type = ?, profit = ? WHERE id = ?',
                                (exit_price, timestamp, exit_type, profit, trade_id))
                 conn.commit()
                 
-                # Send exit message
-                message = format_exit_message(pair, exit_type, exit_price, timestamp, price_diff)
-                send_telegram_message(message)
+                display_pair = f"{pair[:3]}/{pair[3:]}"
+                exit_type_text = {"TP": "Take Profit", "SL": "Stop Loss", "BE": "Break Even"}.get(exit_type, "Exit")
+                exit_message_part = f"**Reversal Signal for {display_pair}**\n🔄 Closing previous {existing_signal} ({exit_type_text} Hit)\n💵 Exit: {exit_price}\n📏 Price Diff: {price_diff:.4f}\n"
+            else:
+                # Same signal
+                if pair == 'XAUUSD':
+                    # For XAUUSD: Ignore duplicates to prevent double signals
+                    print(f"Ignored duplicate {signal} signal for {pair}")
+                    return "Ignored duplicate signal", 200
+                else:
+                    # For other pairs: Treat as adjustment if entry differs, close old as BE
+                    if price_diff > BREAK_EVEN_THRESHOLD:
+                        is_adjustment = True
+                        exit_price = entry  # Use new entry as exit for adjustment
+                        exit_type = 'BE'
+                        profit = 0.0
+                        price_diff = entry - existing_entry if existing_signal == 'BUY' else existing_entry - entry
+                        
+                        cursor.execute('UPDATE trades SET status = "closed", exit_price = ?, exit_timestamp = ?, exit_type = ?, profit = ? WHERE id = ?',
+                                       (exit_price, timestamp, exit_type, profit, trade_id))
+                        conn.commit()
+                        
+                        display_pair = f"{pair[:3]}/{pair[3:]}"
+                        exit_message_part = f"**Adjustment Signal for {display_pair}**\n🔄 Closing previous {existing_signal} (Break Even)\n💵 Exit: {exit_price}\n📏 Price Diff: {price_diff:.4f}\n"
+                    else:
+                        # True duplicate (same signal, near-identical entry)
+                        print(f"Ignored true duplicate {signal} signal for {pair} (price diff {price_diff})")
+                        return "Ignored duplicate", 200
         
-        # Insert the new trade (whether new or after reversal)
+        # Insert the new trade (for new, reversal, or adjustment)
         cursor.execute('INSERT INTO trades (pair, signal, entry, sl, timestamp) VALUES (?, ?, ?, ?, ?)',
                        (pair, signal, entry, sl, timestamp))
         conn.commit()
         
-        # Send Telegram message for new entry
-        message = format_buy_sell_message(pair, signal, entry, sl, timestamp)
+        # Send message(s)
+        entry_message = format_buy_sell_message(pair, signal, entry, sl, timestamp)
+        if is_reversal or is_adjustment:
+            combined_message = exit_message_part + "\n" + entry_message
+            send_telegram_message(combined_message)
+        else:
+            send_telegram_message(entry_message)
+        
         daily_signals.append({"pair": pair, "signal": signal})
-        send_telegram_message(message)
     
     elif 'exit_price' in data:
         exit_price = data.get('exit_price')
