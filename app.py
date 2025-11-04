@@ -10,24 +10,21 @@ import json
 
 app = Flask(__name__)
 
-# --- Config ---
-BOT_TOKEN = "7776677134:AAGJo3VfwiB5gDpCE5e5jvtHonhTcjv-NWc"
-CHAT_ID = "-1002658080507"  # Private group ID
+# --- Config: Use environment variables (Render) with fallbacks ---
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7776677134:AAGJo3VfwiB5gDpCE5e5jvtHonhTcjv-NWc")
+CHAT_ID   = os.getenv("CHAT_ID", "-1002658080507")
+DB_PATH   = os.getenv("DB_PATH", '/data/trades.db')
 
 # SL Distances (in price units)
 SL_DISTANCES = {
-    'USDJPY': 0.32,     # 32 pips
-    'XAUUSD': 26.0,     # 2600 points
-    'EURGBP': 0.0016,   # 16 pips
-    'US500': 45.0,      # 45 points
-    'GER40': 120.0      # 120 points
+    'USDJPY': 0.32,   # 32 pips
+    'XAUUSD': 26.0,   # 2600 points
+    'EURGBP': 0.0016, # 16 pips
+    'US500': 45.0,    # 45 points
+    'GER40': 120.0    # 120 points
 }
-
 BREAK_EVEN_THRESHOLD = 0.0001  # Threshold for break even
 VALID_PAIRS = {'USDJPY', 'XAUUSD', 'EURGBP', 'US500', 'GER40'}
-
-# Database
-DB_PATH = '/data/trades.db'
 
 # --- Data Store ---
 daily_signals = []
@@ -78,12 +75,9 @@ def format_buy_sell_message(pair, signal, entry, sl, timestamp):
         readable_time = dt.strftime('%d %b %H:%M UTC')
     except:
         readable_time = datetime.datetime.now(datetime.UTC).strftime('%d %b %H:%M UTC')
-    
-    if pair in ['US500', 'GER40']:
-        display_pair = pair
-    else:
-        display_pair = f"{pair[:3]}/{pair[3:]}"
-    
+   
+    display_pair = pair if pair in ['US500', 'GER40'] else f"{pair[:3]}/{pair[3:]}"
+   
     return f"""
 **{display_pair} {signal}**
 Entry: {entry}
@@ -98,12 +92,8 @@ def format_exit_message(pair, exit_type, exit_price, timestamp, price_diff):
         readable_time = dt.strftime('%d %b %H:%M UTC')
     except:
         readable_time = datetime.datetime.now(datetime.UTC).strftime('%d %b %H:%M UTC')
-    
-    if pair in ['US500', 'GER40']:
-        display_pair = pair
-    else:
-        display_pair = f"{pair[:3]}/{pair[3:]}"
-    
+   
+    display_pair = pair if pair in ['US500', 'GER40'] else f"{pair[:3]}/{pair[3:]}"
     exit_type_text = {"TP": "Take Profit", "SL": "Stop Loss", "BE": "Break Even"}.get(exit_type, "Exit")
     return f"""
 **{display_pair} {exit_type_text} Hit**
@@ -117,9 +107,9 @@ def calculate_exit_type_and_profit(pair, signal, entry_price, exit_price, sl_dis
     price_diff = exit_price - entry_price if signal == 'BUY' else entry_price - exit_price
     if abs(price_diff) <= BREAK_EVEN_THRESHOLD:
         return 'BE', 0.0, price_diff
-    
+   
     rr_ratio = round(price_diff / sl_distance, 2) if sl_distance != 0 else 0
-    profit = rr_ratio  # 1.0 = 1R
+    profit = rr_ratio
     exit_type = 'TP' if price_diff > 0 else 'SL'
     return exit_type, profit, price_diff
 
@@ -149,15 +139,12 @@ def webhook():
         return "Missing timestamp", 400
 
     signal = data.get('signal')
-    
+
     # --- HANDLE BUY/SELL SIGNALS ---
     if signal in ['BUY', 'SELL']:
-        # Validate signal per pair
         if pair in ['US500', 'GER40'] and signal == 'SELL':
             print(f"Ignored SELL signal for {pair} (only BUY allowed)")
             return "SELL not allowed for indices", 200
-        if pair == 'XAUUSD' and signal not in ['BUY', 'SELL']:
-            return "Invalid signal for XAUUSD", 400
 
         entry = data.get('entry')
         sl = data.get('sl')
@@ -169,10 +156,8 @@ def webhook():
         except ValueError:
             return "Invalid entry/sl", 400
 
-        # Check for open trade
         cursor.execute('SELECT id, signal, entry, sl FROM trades WHERE pair = ? AND status = "open" ORDER BY id DESC LIMIT 1', (pair,))
         existing_trade = cursor.fetchone()
-
         is_reversal = False
         is_adjustment = False
         exit_message_part = ""
@@ -182,39 +167,30 @@ def webhook():
             price_diff = abs(entry - existing_entry)
 
             if existing_signal != signal:
-                # Reversal: Close old trade
                 is_reversal = True
                 exit_price = entry
                 sl_distance = SL_DISTANCES[pair]
                 exit_type, profit, diff = calculate_exit_type_and_profit(pair, existing_signal, existing_entry, exit_price, sl_distance)
-
                 cursor.execute('UPDATE trades SET status = "closed", exit_price = ?, exit_timestamp = ?, exit_type = ?, profit = ? WHERE id = ?',
                                (exit_price, timestamp, exit_type, profit, trade_id))
                 conn.commit()
-
-                display_pair = pair if pair in ['US500', 'GER40'] else f"{pair[:3]}/{pair[3:]}"
-                exit_type_text = {"TP": "Take Profit", "SL": "Stop Loss", "BE": "Break Even"}.get(exit_type, "Exit")
-                exit_message_part = f"**Reversal: {display_pair}**\nClosing {existing_signal} → {exit_type_text}\nExit: {exit_price}\nDiff: {diff:+.4f}\n"
-
+                dp = pair if pair in ['US500', 'GER40'] else f"{pair[:3]}/{pair[3:]}"
+                exit_type_text = {"TP":"Take Profit","SL":"Stop Loss","BE":"Break Even"}.get(exit_type, "Exit")
+                exit_message_part = f"**Reversal: {dp}**\nClosing {existing_signal} → {exit_type_text}\nExit: {exit_price}\nDiff: {diff:+.4f}\n"
             else:
-                # Same direction
                 if pair == 'XAUUSD':
-                    # XAUUSD: Ignore near-identical entries
-                    if price_diff <= 5.0:  # Allow small drift
+                    if price_diff <= 5.0:
                         print(f"Ignored duplicate {signal} for {pair}")
                         return "Duplicate ignored", 200
                     else:
-                        # Adjustment: Close old at BE
                         is_adjustment = True
                         exit_price = entry
                         diff = entry - existing_entry if signal == 'BUY' else existing_entry - entry
                         cursor.execute('UPDATE trades SET status = "closed", exit_price = ?, exit_timestamp = ?, exit_type = "BE", profit = 0.0 WHERE id = ?',
                                        (exit_price, timestamp, trade_id))
                         conn.commit()
-                        display_pair = pair
-                        exit_message_part = f"**Adjustment: {display_pair}**\nBreak Even Close\nExit: {exit_price}\nDiff: {diff:+.4f}\n"
+                        exit_message_part = f"**Adjustment: {pair}**\nBreak Even Close\nExit: {exit_price}\nDiff: {diff:+.4f}\n"
                 else:
-                    # Other pairs: Only allow one open trade
                     if price_diff > BREAK_EVEN_THRESHOLD:
                         is_adjustment = True
                         exit_price = entry
@@ -222,22 +198,19 @@ def webhook():
                         cursor.execute('UPDATE trades SET status = "closed", exit_price = ?, exit_timestamp = ?, exit_type = "BE", profit = 0.0 WHERE id = ?',
                                        (exit_price, timestamp, trade_id))
                         conn.commit()
-                        display_pair = pair if pair in ['US500', 'GER40'] else f"{pair[:3]}/{pair[3:]}"
-                        exit_message_part = f"**Adjustment: {display_pair}**\nBreak Even Close\nExit: {exit_price}\nDiff: {diff:+.4f}\n"
+                        dp = pair if pair in ['US500', 'GER40'] else f"{pair[:3]}/{pair[3:]}"
+                        exit_message_part = f"**Adjustment: {dp}**\nBreak Even Close\nExit: {exit_price}\nDiff: {diff:+.4f}\n"
                     else:
                         print(f"Ignored true duplicate for {pair}")
                         return "Duplicate", 200
 
-        # Insert new trade
         cursor.execute('INSERT INTO trades (pair, signal, entry, sl, timestamp) VALUES (?, ?, ?, ?, ?)',
                        (pair, signal, entry, sl, timestamp))
         conn.commit()
 
-        # Send message
         entry_message = format_buy_sell_message(pair, signal, entry, sl, timestamp)
         if is_reversal or is_adjustment:
-            combined = exit_message_part + "\n" + entry_message
-            send_telegram_message(combined)
+            send_telegram_message(exit_message_part + "\n" + entry_message)
         else:
             send_telegram_message(entry_message)
 
@@ -258,15 +231,12 @@ def webhook():
         if not trade:
             print(f"No open trade for {pair}")
             return "No open trade", 200
-
         trade_id, sig, entry, sl = trade
         sl_distance = SL_DISTANCES[pair]
         exit_type, profit, price_diff = calculate_exit_type_and_profit(pair, sig, entry, exit_price, sl_distance)
-
         cursor.execute('UPDATE trades SET status = "closed", exit_price = ?, exit_timestamp = ?, exit_type = ?, profit = ? WHERE id = ?',
                        (exit_price, timestamp, exit_type, profit, trade_id))
         conn.commit()
-
         message = format_exit_message(pair, exit_type, exit_price, timestamp, price_diff)
         send_telegram_message(message)
 
@@ -275,7 +245,7 @@ def webhook():
 
     return "OK", 200
 
-# --- Reports ---
+# --- Reports (unchanged) ---
 def send_daily_summary():
     global last_summary_sent
     now = datetime.datetime.now(datetime.UTC)
@@ -285,8 +255,8 @@ def send_daily_summary():
     lines = [f"*Today's Signals – {today}*"]
     for s in daily_signals:
         emoji = "BUY" if s['signal'] == 'BUY' else "SELL"
-        pair_display = s['pair'] if s['pair'] in ['US500', 'GER40'] else f"{s['pair'][:3]}/{s['pair'][3:]}"
-        lines.append(f"{pair_display}: {emoji} {s['signal']}")
+        dp = s['pair'] if s['pair'] in ['US500', 'GER40'] else f"{s['pair'][:3]}/{s['pair'][3:]}"
+        lines.append(f"{dp}: {emoji} {s['signal']}")
     lines.append("\nReview and trade wisely!")
     send_telegram_message('\n'.join(lines))
     daily_signals.clear()
@@ -302,18 +272,16 @@ def send_daily_report():
                    (start.isoformat() + 'Z', now.isoformat() + 'Z'))
     trades = cursor.fetchall()
     if not trades: return
-
-    metrics = defaultdict(lambda: {'wins': 0, 'losses': 0, 'be': 0, 'profit': 0.0})
+    metrics = defaultdict(lambda: {'wins':0,'losses':0,'be':0,'profit':0.0})
     for pair, et, p in trades:
         if et == 'TP': metrics[pair]['wins'] += 1
         elif et == 'SL': metrics[pair]['losses'] += 1
         elif et == 'BE': metrics[pair]['be'] += 1
         metrics[pair]['profit'] += p
-
     total = sum(m['profit'] for m in metrics.values())
     lines = [f"*Daily Performance – {now.strftime('%d %b %Y')}*"]
     for pair, m in metrics.items():
-        dp = pair if pair in ['US500', 'GER40'] else f"{pair[:3]}/{pair[3:]}"
+        dp = pair if pair in ['US500','GER40'] else f"{pair[:3]}/{pair[3:]}"
         lines.append(f"\n*{dp}*")
         lines.append(f"Wins: {m['wins']} | Losses: {m['losses']} | BE: {m['be']}")
         lines.append(f"Net: {m['profit']:+.2f}R")
@@ -321,7 +289,6 @@ def send_daily_report():
     send_telegram_message('\n'.join(lines))
     last_daily_report = now
 
-# Weekly & Monthly reports (unchanged logic, just formatting)
 def send_weekly_report():
     global last_weekly_report
     now = datetime.datetime.now(datetime.UTC)
@@ -332,8 +299,7 @@ def send_weekly_report():
                    (start.isoformat() + 'Z', now.isoformat() + 'Z'))
     trades = cursor.fetchall()
     if not trades: return
-    # ... same as daily but for week
-    metrics = defaultdict(lambda: {'wins': 0, 'losses': 0, 'be': 0, 'profit': 0.0})
+    metrics = defaultdict(lambda: {'wins':0,'losses':0,'be':0,'profit':0.0})
     for pair, et, p in trades:
         if et == 'TP': metrics[pair]['wins'] += 1
         elif et == 'SL': metrics[pair]['losses'] += 1
@@ -342,7 +308,7 @@ def send_weekly_report():
     total = sum(m['profit'] for m in metrics.values())
     lines = [f"*Weekly Performance – Ending {now.strftime('%d %b')}*"]
     for pair, m in metrics.items():
-        dp = pair if pair in ['US500', 'GER40'] else f"{pair[:3]}/{pair[3:]}"
+        dp = pair if pair in ['US500','GER40'] else f"{pair[:3]}/{pair[3:]}"
         lines.append(f"\n*{dp}*")
         lines.append(f"W: {m['wins']} | L: {m['losses']} | BE: {m['be']}")
         lines.append(f"Net: {m['profit']:+.2f}R")
@@ -356,12 +322,12 @@ def send_monthly_report():
     if now.day != 1 or now.hour != 0 or (last_monthly_report and last_monthly_report.date() == now.date()):
         return
     start = (now - datetime.timedelta(days=1)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    end = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - datetime.timedelta(seconds=1)
+    end   = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - datetime.timedelta(seconds=1)
     cursor.execute('SELECT pair, exit_type, profit FROM trades WHERE status = "closed" AND exit_timestamp >= ? AND exit_timestamp <= ?',
                    (start.isoformat() + 'Z', end.isoformat() + 'Z'))
     trades = cursor.fetchall()
     if not trades: return
-    metrics = defaultdict(lambda: {'wins': 0, 'losses': 0, 'be': 0, 'profit': 0.0})
+    metrics = defaultdict(lambda: {'wins':0,'losses':0,'be':0,'profit':0.0})
     for pair, et, p in trades:
         if et == 'TP': metrics[pair]['wins'] += 1
         elif et == 'SL': metrics[pair]['losses'] += 1
@@ -371,7 +337,7 @@ def send_monthly_report():
     month = end.strftime('%b %Y')
     lines = [f"*Monthly Performance – {month}*"]
     for pair, m in metrics.items():
-        dp = pair if pair in ['US500', 'GER40'] else f"{pair[:3]}/{pair[3:]}"
+        dp = pair if pair in ['US500','GER40'] else f"{pair[:3]}/{pair[3:]}"
         lines.append(f"\n*{dp}*")
         lines.append(f"W: {m['wins']} | L: {m['losses']} | BE: {m['be']}")
         lines.append(f"Net: {m['profit']:+.2f}R")
@@ -391,4 +357,4 @@ def scheduler():
 threading.Thread(target=scheduler, daemon=True).start()
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=int(os.getenv("PORT", 5000)))
