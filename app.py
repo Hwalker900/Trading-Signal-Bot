@@ -5,7 +5,6 @@ import time
 import threading
 import sqlite3
 import os
-from collections import defaultdict
 import json
 import logging
 
@@ -15,9 +14,9 @@ log = logging.getLogger(__name__)
 
 # === HARDCODED: ORIGINAL GROUP (6v4b) ===
 BOT_TOKEN = "7776677134:AAGJo3VfwiB5gDpCE5e5jvtHonhTcjv-NWc"
-CHAT_ID   = "-1002658080507"
-
+CHAT_ID = "-1002658080507"
 DB_PATH = "/opt/render/project/src/trades.db"
+
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
@@ -29,8 +28,8 @@ SL_DISTANCES = {
 BREAK_EVEN_THRESHOLD = 0.0001
 VALID_PAIRS = {'USDJPY', 'XAUUSD', 'EURGBP', 'US500', 'GER40'}
 
-daily_signals = []
-last_summary_sent = None
+# List to store recent signals with timestamp
+recent_signals = []
 
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS trades (
@@ -72,6 +71,7 @@ def calculate_exit_type_and_profit(pair, signal, entry_price, exit_price, sl_dis
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    global recent_signals
     try:
         data = json.loads(request.data.decode('utf-8'))
         log.info(f"Webhook: {data}")
@@ -88,10 +88,12 @@ def webhook():
     if signal in ['BUY', 'SELL']:
         if pair in ['US500', 'GER40'] and signal == 'SELL':
             return "SELL not allowed", 200
+
         entry = data.get('entry')
         sl = data.get('sl')
         if entry is None or sl is None:
             return "Missing entry/sl", 400
+
         try:
             entry, sl = float(entry), float(sl)
         except:
@@ -125,7 +127,13 @@ def webhook():
 
         msg = format_buy_sell_message(pair, signal, entry, sl, timestamp)
         send_telegram_message(extra + ("\n" + msg if extra else msg))
-        daily_signals.append({"pair": pair, "signal": signal})
+
+        # Add to recent signals for summaries
+        recent_signals.append({
+            "pair": pair,
+            "signal": signal,
+            "timestamp": datetime.datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+        })
 
     elif 'exit_price' in data:
         exit_price = data.get('exit_price')
@@ -147,33 +155,87 @@ def webhook():
 
         send_telegram_message(format_exit_message(pair, et, exit_price, timestamp, pd))
         log.info("EXIT ALERT SENT TO ORIGINAL GROUP")
-
     else:
         return "Invalid payload", 400
 
     return "OK", 200
 
-def send_daily_summary():
-    global last_summary_sent
+# === Weekly & Monthly Summaries ===
+def send_weekly_summary():
     now = datetime.datetime.now(datetime.UTC)
-    if now.hour != 22 or (last_summary_sent and last_summary_sent.date() == now.date()) or not daily_signals:
+    if now.weekday() != 6 or now.hour != 22 or now.minute < 5:  # Sunday at 22:00–22:05 UTC
         return
-    lines = [f"*Today's Signals – {now.strftime('%d %b')}*"]
-    for s in daily_signals:
+
+    week_ago = now - datetime.timedelta(days=7)
+    week_signals = [s for s in recent_signals if s['timestamp'] >= week_ago]
+
+    if not week_signals:
+        return
+
+    lines = [f"*Weekly Signals Summary – {now.strftime('%d %b %Y')}*"]
+    signal_count = {}
+    for s in week_signals:
         dp = s['pair'] if s['pair'] in ['US500','GER40'] else f"{s['pair'][:3]}/{s['pair'][3:]}"
-        lines.append(f"{dp}: {s['signal']}")
-    lines.append("\nReview and trade wisely!")
+        lines.append(f"• {dp} {s['signal']} ({s['timestamp'].strftime('%d %b %H:%M')})")
+        signal_count[s['pair']] = signal_count.get(s['pair'], 0) + 1
+
+    lines.append("\n*By Pair:*")
+    for pair, count in sorted(signal_count.items()):
+        dp = pair if pair in ['US500','GER40'] else f"{pair[:3]}/{pair[3:]}"
+        lines.append(f"{dp}: {count} signal{'' if count == 1 else 's'}")
+
+    lines.append("\nReview performance and trade wisely!")
     send_telegram_message('\n'.join(lines))
-    daily_signals.clear()
-    last_summary_sent = now
+
+def send_monthly_summary():
+    now = datetime.datetime.now(datetime.UTC)
+    # 1st of the month at 22:00–22:05 UTC
+    if now.day != 1 or now.hour != 22 or now.minute < 5:
+        return
+
+    last_month = now - datetime.timedelta(days=1)
+    month_start = last_month.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_end = last_month.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    month_signals = [s for s in recent_signals if month_start <= s['timestamp'] <= month_end]
+
+    # Fetch closed trades from last month for performance stats
+    cursor.execute('''
+        SELECT exit_type, profit FROM trades
+        WHERE status="closed"
+        AND datetime(exit_timestamp) BETWEEN ? AND ?
+    ''', (month_start.isoformat(), (month_end + datetime.timedelta(microseconds=1)).isoformat()))
+    closed = cursor.fetchall()
+
+    tp = sum(1 for et, _ in closed if et == 'TP')
+    sl = sum(1 for et, _ in closed if et == 'SL')
+    be = sum(1 for et, _ in closed if et == 'BE')
+    total_rr = sum(p for et, p in closed if et in ('TP', 'SL'))
+
+    lines = [f"*Monthly Report – {last_month.strftime('%B %Y')}*"]
+    if month_signals or closed:
+        lines.append(f"Signals issued: {len(month_signals)}")
+        if closed:
+            lines.append("\n*Closed Trades Performance:*")
+            lines.append(f"TP: {tp} | SL: {sl} | BE: {be}")
+            lines.append(f"Total R:R: {total_rr:+.2f}")
+            win_rate = (tp / (tp + sl) * 100) if (tp + sl) > 0 else 0
+            lines.append(f"Win Rate: {win_rate:.1f}% (excluding BE)")
+    else:
+        lines.append("No activity last month.")
+
+    lines.append("\nStay disciplined!")
+    send_telegram_message('\n'.join(lines))
 
 def scheduler():
     while True:
-        send_daily_summary()
+        send_weekly_summary()
+        send_monthly_summary()
         time.sleep(60)
 
 threading.Thread(target=scheduler, daemon=True).start()
-log.info("Original service (6v4b) started with DB")
+
+log.info("Original service (6v4b) started with weekly (Sun 22:00) & monthly (1st 22:00) summaries")
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
