@@ -31,6 +31,10 @@ VALID_PAIRS = {'USDJPY', 'XAUUSD', 'EURGBP', 'US500', 'GER40'}
 # List to store recent signals with timestamp
 recent_signals = []
 
+# Track when summaries were last sent to prevent duplicates
+last_weekly_sent = None
+last_monthly_sent = None
+
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,10 +164,17 @@ def webhook():
 
     return "OK", 200
 
-# === Weekly & Monthly Summaries ===
+# === Weekly & Monthly Summaries (sent ONLY ONCE per period) ===
 def send_weekly_summary():
+    global last_weekly_sent
     now = datetime.datetime.now(datetime.UTC)
-    if now.weekday() != 6 or now.hour != 22 or now.minute < 5:  # Sunday at 22:00–22:05 UTC
+
+    # Trigger only on Sunday during 22:00–22:59 UTC
+    if now.weekday() != 6 or now.hour != 22:
+        return
+
+    # Prevent duplicate sends on the same day
+    if last_weekly_sent and last_weekly_sent.date() == now.date():
         return
 
     week_ago = now - datetime.timedelta(days=7)
@@ -186,11 +197,18 @@ def send_weekly_summary():
 
     lines.append("\nReview performance and trade wisely!")
     send_telegram_message('\n'.join(lines))
+    last_weekly_sent = now
 
 def send_monthly_summary():
+    global last_monthly_sent
     now = datetime.datetime.now(datetime.UTC)
-    # 1st of the month at 22:00–22:05 UTC
-    if now.day != 1 or now.hour != 22 or now.minute < 5:
+
+    # Trigger only on 1st of month during 22:00–22:59 UTC
+    if now.day != 1 or now.hour != 22:
+        return
+
+    # Prevent duplicate sends in the same month/year
+    if last_monthly_sent and last_monthly_sent.month == now.month and last_monthly_sent.year == now.year:
         return
 
     last_month = now - datetime.timedelta(days=1)
@@ -199,7 +217,6 @@ def send_monthly_summary():
 
     month_signals = [s for s in recent_signals if month_start <= s['timestamp'] <= month_end]
 
-    # Fetch closed trades from last month for performance stats
     cursor.execute('''
         SELECT exit_type, profit FROM trades
         WHERE status="closed"
@@ -226,6 +243,7 @@ def send_monthly_summary():
 
     lines.append("\nStay disciplined!")
     send_telegram_message('\n'.join(lines))
+    last_monthly_sent = now
 
 def scheduler():
     while True:
@@ -235,7 +253,7 @@ def scheduler():
 
 threading.Thread(target=scheduler, daemon=True).start()
 
-log.info("Original service (6v4b) started with weekly (Sun 22:00) & monthly (1st 22:00) summaries")
+log.info("Original service (6v4b) started – weekly (Sunday 22:00) & monthly (1st 22:00) summaries, sent only once")
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
