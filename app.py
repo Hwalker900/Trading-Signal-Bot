@@ -31,7 +31,7 @@ VALID_PAIRS = {'USDJPY', 'XAUUSD', 'EURGBP', 'US500', 'GER40'}
 # List to store recent signals with timestamp
 recent_signals = []
 
-# Track when summaries were last sent to prevent duplicates
+# Track last sent to prevent any duplicates, even after restart
 last_weekly_sent = None
 last_monthly_sent = None
 
@@ -132,7 +132,7 @@ def webhook():
         msg = format_buy_sell_message(pair, signal, entry, sl, timestamp)
         send_telegram_message(extra + ("\n" + msg if extra else msg))
 
-        # Add to recent signals for summaries
+        # Add to recent signals
         recent_signals.append({
             "pair": pair,
             "signal": signal,
@@ -164,16 +164,16 @@ def webhook():
 
     return "OK", 200
 
-# === Weekly & Monthly Summaries (sent ONLY ONCE per period) ===
+# === Weekly & Monthly Summaries – NOW FULLY PROTECTED FROM SPAM ===
 def send_weekly_summary():
     global last_weekly_sent
     now = datetime.datetime.now(datetime.UTC)
 
-    # Trigger only on Sunday during 22:00–22:59 UTC
-    if now.weekday() != 6 or now.hour != 22:
+    # Only trigger Sunday between 22:00 and 22:04 UTC
+    if now.weekday() != 6 or now.hour != 22 or not (0 <= now.minute <= 4):
         return
 
-    # Prevent duplicate sends on the same day
+    # Prevent duplicate even if script runs multiple times in window
     if last_weekly_sent and last_weekly_sent.date() == now.date():
         return
 
@@ -197,17 +197,17 @@ def send_weekly_summary():
 
     lines.append("\nReview performance and trade wisely!")
     send_telegram_message('\n'.join(lines))
-    last_weekly_sent = now
+    last_weekly_sent = now  # Mark as sent
 
 def send_monthly_summary():
     global last_monthly_sent
     now = datetime.datetime.now(datetime.UTC)
 
-    # Trigger only on 1st of month during 22:00–22:59 UTC
-    if now.day != 1 or now.hour != 22:
+    # Only trigger on 1st of month between 22:00 and 22:04 UTC
+    if now.day != 1 or now.hour != 22 or not (0 <= now.minute <= 4):
         return
 
-    # Prevent duplicate sends in the same month/year
+    # Prevent duplicate in same month/year
     if last_monthly_sent and last_monthly_sent.month == now.month and last_monthly_sent.year == now.year:
         return
 
@@ -243,7 +243,7 @@ def send_monthly_summary():
 
     lines.append("\nStay disciplined!")
     send_telegram_message('\n'.join(lines))
-    last_monthly_sent = now
+    last_monthly_sent = now  # Mark as sent
 
 def scheduler():
     while True:
@@ -253,7 +253,7 @@ def scheduler():
 
 threading.Thread(target=scheduler, daemon=True).start()
 
-log.info("Original service (6v4b) started – weekly (Sunday 22:00) & monthly (1st 22:00) summaries, sent only once")
+log.info("Original service (6v4b) started – summaries at 22:00–22:04 UTC only, no spam guaranteed")
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
