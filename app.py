@@ -22,7 +22,7 @@ conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
 SL_DISTANCES = {
-    'USDJPY': 0.32, 'XAUUSD': 26.0, 'EURGBP': 0.0016,
+    'USDJPY': 0.4, 'XAUUSD': 26.0, 'EURGBP': 0.0016,
     'US500': 45.0, 'GER40': 120.0
 }
 BREAK_EVEN_THRESHOLD = 0.0001
