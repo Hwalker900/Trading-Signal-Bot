@@ -23,7 +23,7 @@ cursor = conn.cursor()
 
 SL_DISTANCES = {
     'USDJPY': 0.4, 'XAUUSD': 26.0, 'EURGBP': 0.0016,
-    'US500': 45.0, 'GER40': 120.0
+    'US500': 45.0, 'GER40': 180.0
 }
 BREAK_EVEN_THRESHOLD = 0.0001
 VALID_PAIRS = {'USDJPY', 'XAUUSD', 'EURGBP', 'US500', 'GER40'}
