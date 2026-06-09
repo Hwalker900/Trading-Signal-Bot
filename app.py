@@ -21,7 +21,7 @@ conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
 SL_DISTANCES = {
-    'USDJPY': 0.4,
+    'USDJPY': 0.16,
     'XAUUSD': 26.0,
     'EURGBP': 0.0016,
     'US500': 45.0,
